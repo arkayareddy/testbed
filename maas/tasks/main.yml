@@ -1,0 +1,96 @@
+---
+# tasks file for maas
+
+- name: install package through snap
+  snap:
+     name:
+        - maas
+        - maas-test-db
+     state: present
+     channel: 2.8/stable
+
+- name: install pip3
+  apt:
+    name: 
+      - python3-pip
+      - network-manager
+      - bridge-utils
+      - qemu-kvm
+      - qemu
+      - virt-manager
+      - mlocate
+      - net-tools
+      - jq
+    state: present
+    update_cache: yes
+
+- name: install pexpect
+  pip:
+    name: pexpect
+
+- name: ssh key generate
+  shell: ssh-keygen -q -t rsa -f ~/.ssh/id_rsa -N ""
+
+- name: craete a bridge adapter
+  copy:
+     src: 01-netcfg.yml
+     dest: /etc/netplan/01-netcfg.yml
+
+- name: create the adapter
+  command: netplan apply
+
+- name: destroy the default adapter
+  command:
+       argv:
+          - sudo virsh net-destroy default
+          - sudo virsh net-undefine default
+
+- name: create the new adapter
+  command:
+    argv:
+         - sudo virsh net-define maas.xml
+         - sudo virsh net-autostart default
+         - sudo virsh net-autostart default
+
+- name: create the network pool
+  command:
+     argv:
+         - sudo virsh pool-define-as default dir - - - - "/var/lib/libvirt/images"
+         - sudo virsh pool-autostart default
+         - sudo virsh pool-start default
+
+
+- name: initalize the maas
+  expect:
+     command: sudo maas init {{ mode }} --database-uri maas-test-db:///
+     responses:
+            "MAAS": "{{ maas_url }}"
+     timeout: 240
+     echo: yes
+
+- name: create admin
+  expect:
+      command: sudo maas createadmin
+      responses:
+            "Username": "{{ username }}"
+            "Password": "{{ password }}"
+            "Again": "{{ password }}"
+            "Email": "{{ email }}"
+            "Import": "\n"
+      echo: yes
+
+- name: login to maas
+  shell: sudo maas login {{ username }} {{ maas_url }} $(maas apikey --username {{ username }} )
+
+- name: import ssh keys
+  shell: maas {{ username }} sshkeys create "key=$(<~/.ssh/id_rsa.pub)"
+
+- name: finding fabric id
+  shell: FABRIC_ID=$(maas {{ username }} subnet read 10.20.81.2/24 | grep fabric_id | cut -d ' ' -f 10 | cut -d "," -f 1)
+
+- name: enable dhcp
+  shell: maas {{ username }} vlan update $FABRIC_ID untagged dhcp_on=True
+
+- name: adding kvm
+  shell: maas {{ username }} pods create type=virsh power_address={{ virsh_address }} power_user={{ username_os }} power_pass={{ pass_os }}
+
